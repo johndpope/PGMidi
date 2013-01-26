@@ -74,6 +74,8 @@ uint64_t convertTimeInNanoseconds(uint64_t time)
 #define VVMIDIResetVal	 0xFF			//	no data bytes! never received/don't send!
 
 
+#define kMaxValue 127
+
 @implementation PGMidiSession
 {
 	double currentClockTime;
@@ -205,28 +207,40 @@ static PGMidiSession *shared = nil;
     }
 }
 
-- (void) sendCC:(int)cc value:(int)val
+- (void) sendCC:(int32_t)cc withChannel:(int32_t)channel withValue:(int32_t)value
 {
-	const UInt8 cntrl[]  = { VVMIDIControlChangeVal, cc, val };
+    int32_t midiChannel = VVMIDIControlChangeVal + channel - 1;
+    
+	const UInt8 cntrl[]  = { midiChannel, cc, value };
 	[midi sendBytes:cntrl size:sizeof(cntrl)];
 }
 
-- (void) sendNote:(int)note
+- (void) sendNoteOn:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity
 {
-	[self sendNote:note velocity:127 length:0];
+    int32_t midiChannelForNoteOn = VVMIDINoteOnVal + channel - 1;
+    
+	const UInt8 noteOn[]  = { midiChannelForNoteOn, note, velocity };
+	[midi sendBytes:noteOn size:sizeof(noteOn)];
 }
 
-- (void) sendNote:(int)note velocity:(int)vel length:(NSTimeInterval)length
+- (void) sendNoteOff:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity
 {
-	const UInt8 noteOn[]  = { VVMIDINoteOnVal, note, vel };
-	[midi sendBytes:noteOn size:sizeof(noteOn)];
+    int32_t midiChannelForNoteOff = VVMIDINoteOffVal + channel - 1;
+    
+	const UInt8 noteOff[]  = { midiChannelForNoteOff, note, velocity };
+    [midi sendBytes:noteOff size:sizeof(noteOff)];
+}
+
+- (void) sendNote:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity withLength:(NSTimeInterval)length
+{
+    [self sendNoteOn:note withChannel:channel withVelocity:velocity];
 
 	dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, length * NSEC_PER_SEC);
 	dispatch_after(popTime, dispatch_get_main_queue(), ^(void)
 	{
-		const UInt8 noteOff[]  = { VVMIDINoteOffVal, note, vel };
-		[midi sendBytes:noteOff size:sizeof(noteOff)];
+		[self sendNoteOff:note withChannel:channel withVelocity:0];
 	});
 }
+
 
 @end

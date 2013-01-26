@@ -16,9 +16,9 @@
  It's simple, and requires no client-side setup! You can go right into these (although setting a delegate first thing is preferred to instantiate the singleton and give it time to connect to MIDI sources/destinations).
  
  Sending a note/CC:
-	 [[PGMidiSession sharedSession] sendNote:36];
-	 [[PGMidiSession sharedSession] sendNote:36 velocity:120 length:1];
-	 [[PGMidiSession sharedSession] sendCC:5 value:127];
+	 [[PGMidiSession sharedSession] sendNoteOn:36 withChannel:1 withVelocity:127];
+	 [[PGMidiSession sharedSession] sendNote:36 withChannel:1 withVelocity:120 withLength:1];
+	 [[PGMidiSession sharedSession] sendCC:5 withChannel:1 withValue:127];
  
  Accessing BPM:
 	 [PGMidiSession sharedSession].bpm
@@ -50,10 +50,16 @@
 
 + (PGMidiSession *) sharedSession;
 
-/* See above for usage. Simple enough */
-- (void) sendCC:(int)cc value:(int)val;
-- (void) sendNote:(int)note;
-- (void) sendNote:(int)cc velocity:(int)vel length:(NSTimeInterval)length;
+/* 
+ The methods below are used to send Control Change or Note.
+ The channel property is a value between 1 and 16
+ */
+- (void) sendCC:(int32_t)cc withChannel:(int32_t)channel withValue:(int32_t)value;
+- (void) sendNoteOn:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
+- (void) sendNoteOff:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
+- (void) sendNote:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity withLength:(NSTimeInterval)length;
+
+
 - (void) performBlock:(void (^)(void))block quantizedToInterval:(double)numBarsOrFraction;
 
 @end
