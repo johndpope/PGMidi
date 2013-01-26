@@ -17,6 +17,7 @@
  
  Sending a note/CC:
 	 [[PGMidiSession sharedSession] sendNoteOn:36 withChannel:1 withVelocity:127];
+     [[PGMidiSession sharedSession] sendNoteOff:36 withChannel:1 withVelocity:127];
 	 [[PGMidiSession sharedSession] sendNote:36 withChannel:1 withVelocity:120 withLength:1];
 	 [[PGMidiSession sharedSession] sendCC:5 withChannel:1 withValue:127];
  
@@ -55,6 +56,7 @@
  The channel property is a value between 1 and 16
  */
 - (void) sendCC:(int32_t)cc withChannel:(int32_t)channel withValue:(int32_t)value;
+- (void) sendPitchWheelChannel:(int32_t)channel withValue:(int32_t)value;
 - (void) sendNoteOn:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
 - (void) sendNoteOff:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
 - (void) sendNote:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity withLength:(NSTimeInterval)length;

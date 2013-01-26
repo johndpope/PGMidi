@@ -17,6 +17,7 @@
 @end
 
 @implementation QuantizedBlock
+
 @synthesize block, interval, extraBars;
 
 @end
@@ -152,15 +153,15 @@ static PGMidiSession *shared = nil;
 					NSLog(@"tick");
 				}
 				
-				for (int i = 0; i < quantizedBlockQueue.count; i++)
+				for (NSUInteger j = 0; j < quantizedBlockQueue.count; j++)
 				{
-					QuantizedBlock *qb = quantizedBlockQueue[i];
+					QuantizedBlock *qb = quantizedBlockQueue[j];
 					int interval = (int)(qb.interval*96);
 					if (num96notes % interval == 0 && qb.extraBars <= 0)
 					{
 						//run the block on the main thread to allow UI updates etc
 						dispatch_async(dispatch_get_main_queue(), qb.block);
-						[quantizedBlockQueue removeObjectAtIndex:i];
+						[quantizedBlockQueue removeObjectAtIndex:j];
 						i--;
 					}
 				}
@@ -205,6 +206,14 @@ static PGMidiSession *shared = nil;
 		
         packet = MIDIPacketNext(packet);
     }
+}
+
+- (void) sendPitchWheelChannel:(int32_t)channel withLSBValue:(int32_t)lsb withMSBValue:(int32_t)msb
+{
+    int32_t midiChannel = VVMIDIPitchWheelVal + channel - 1;
+    
+	const UInt8 message[]  = { midiChannel, lsb, msb };
+	[midi sendBytes:message size:sizeof(message)];
 }
 
 - (void) sendCC:(int32_t)cc withChannel:(int32_t)channel withValue:(int32_t)value
