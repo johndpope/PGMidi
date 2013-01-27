@@ -409,4 +409,17 @@ void PGMIDINotifyProc(const MIDINotification *message, void *refCon)
     [self sendPacketList:packetList];
 }
 
+- (void) sendBytes:(const UInt8*)data size:(UInt32)size withTime:(MIDITimeStamp)time
+{
+    //NSLog(@"%s(%u bytes to core MIDI)", __func__, unsigned(size));
+    assert(size < 65536);
+    Byte packetBuffer[size+100];
+    MIDIPacketList *packetList = (MIDIPacketList*)packetBuffer;
+    MIDIPacket     *packet     = MIDIPacketListInit(packetList);
+    
+    packet = MIDIPacketListAdd(packetList, sizeof(packetBuffer), packet, time, size, data);
+    
+    [self sendPacketList:packetList];
+}
+
 @end

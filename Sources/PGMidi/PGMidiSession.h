@@ -53,16 +53,33 @@
 
 /* 
  The methods below are used to send Control Change or Note.
- The channel property is a value between 1 and 16
+ The channel argument is a value between 1 and 16
  */
 - (void) sendCC:(int32_t)cc withChannel:(int32_t)channel withValue:(int32_t)value;
-- (void) sendPitchWheelChannel:(int32_t)channel withValue:(int32_t)value;
+- (void) sendPitchWheel:(int)channel withLSBValue:(int)lsb withMSBValue:(int)msb;
+
 - (void) sendNoteOn:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
+- (void) sendNoteOn:(int)note withChannel:(int)channel withVelocity:(int)velocity quantizedToInterval:(double)quantize;
+
 - (void) sendNoteOff:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
+
 - (void) sendNote:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity withLength:(NSTimeInterval)length;
 
+/* 
+ In case you need to update some UI elements at a givent quantization division, this will do the trick..
+ */
+- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)numBarsOrFraction;
 
-- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)numBarsOrFraction;
+/*
+ In case you need to perform some logic at a given quantization division in the high priority thread.
+ Be careful to not use Blocking IO. 
+ 
+ Quantization accuracy of this method is great for local processing but would not be the best to send midi events as it doesn't account for the latency.
+ If you want to send a note at a given quantization division, use sendNoteOn:withChannel:withVelocity:quantizedToInterval instead as it will use CoreMIDI
+ timestamp and let CoreMIDI deal with the latency which is very precise and theorically result to a 0ms latency as the midi message is sent in advance 
+ to be triggered at a given time in the future.
+ */
+- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars;
 
 @end
 

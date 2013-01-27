@@ -120,6 +120,7 @@
 
 /// Send a MIDI byte stream to every connected MIDI port
 - (void) sendBytes:(const UInt8*)bytes size:(UInt32)size;
+- (void) sendBytes:(const UInt8*)bytes size:(UInt32)size withTime:(MIDITimeStamp)time;
 - (void) sendPacketList:(const MIDIPacketList *)packetList;
 
 @end

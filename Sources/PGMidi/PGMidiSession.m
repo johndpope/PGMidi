@@ -13,12 +13,13 @@
 @property (copy) void(^block)();
 @property (nonatomic) double interval;
 @property (nonatomic) int extraBars;
+@property (nonatomic) BOOL executeOnMainThread;
 
 @end
 
 @implementation QuantizedBlock
 
-@synthesize block, interval, extraBars;
+@synthesize block, interval, extraBars,executeOnMainThread;
 
 @end
 
@@ -27,21 +28,6 @@
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
-
-uint64_t convertTimeInNanoseconds(uint64_t time)
-{
-    const int64_t kOneThousand = 1000;
-    static mach_timebase_info_data_t s_timebase_info;
-	
-    if (s_timebase_info.denom == 0)
-    {
-        (void) mach_timebase_info(&s_timebase_info);
-    }
-	
-    // mach_absolute_time() returns billionth of seconds,
-    // so divide by one thousand to get nanoseconds
-    return (uint64_t)((time * s_timebase_info.numer) / (kOneThousand * s_timebase_info.denom));
-}
 
 //These definitions taken directly from VVOpenSource (https://code.google.com/p/vvopensource/) Thank you!
 
@@ -74,9 +60,6 @@ uint64_t convertTimeInNanoseconds(uint64_t time)
 #define VVMIDIActiveSenseVal 0xFE		//	no data bytes! sent every 300 ms. to make sure device is active
 #define VVMIDIResetVal	 0xFF			//	no data bytes! never received/don't send!
 
-
-#define kMaxValue 127
-
 @implementation PGMidiSession
 {
 	double currentClockTime;
@@ -85,6 +68,11 @@ uint64_t convertTimeInNanoseconds(uint64_t time)
 	int num96notes;
 	
 	NSMutableArray *quantizedBlockQueue;
+    
+    double intervalInNanoseconds;
+    double tickDelta;
+    
+    NSMutableArray* quantizedNoteQueue;
 }
 
 @synthesize midi, delegate, bpm, playing;
@@ -113,20 +101,38 @@ static PGMidiSession *shared = nil;
         [midi enableNetwork:YES];
 		
 		bpm = -1; //signifies no MIDI clock in
+        
+        //prepare queue with 20 slots (to avoid unecessary memory allocation in the high priority thread later on)
+        quantizedNoteQueue = [[NSMutableArray alloc] initWithCapacity:20];
 	}
+    
 	return self;
+}
+
+- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)bars
+{
+	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
+    [qb setExecuteOnMainThread:YES];
+    [quantizedBlockQueue addObject:qb];
 }
 
 - (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars
 {
-	QuantizedBlock *qb = [[QuantizedBlock alloc] init];
+	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
+    [quantizedBlockQueue addObject:qb];
+}
+
+- (QuantizedBlock*) createQuantizedBlock:(void (^)(void))block quantizedToInterval:(double)bars
+{
+    QuantizedBlock *qb = [[QuantizedBlock alloc] init];
 	qb.block = block;
 	qb.extraBars = (int)bars; //truncate to a whole number
 	qb.interval =  bars-qb.extraBars; //get the decimal part
 	if (qb.interval == 0)
 		qb.interval = 1; //if the interval is on a 1 downbeat it'll be 0
 	NSLog(@"after %d bars, will run at the %d (currently on %d)",qb.extraBars,(int)(qb.interval*96),num96notes);
-	[quantizedBlockQueue addObject:qb];
+    
+    return qb;
 }
 
 - (void) midiSource:(PGMidiSource *)source midiReceived:(const MIDIPacketList *)packetList
@@ -142,30 +148,34 @@ static PGMidiSession *shared = nil;
         {
 			if (playing)
 			{
-				/* every MIDI clock packet sent is a 96th note. */
-				/* 0 is the downbeat of 1 */
-				if (num96notes == 0)
-				{
-					for (QuantizedBlock *qb in quantizedBlockQueue)
-					{
-						qb.extraBars--;
-					}
-					NSLog(@"tick");
-				}
+                /* every MIDI clock packet sent is a 96th note. */
+                /* 0 is the downbeat of 1 */
+                if (num96notes == 0)
+                {
+                    for (QuantizedBlock *qb in quantizedBlockQueue)
+                    {
+                        qb.extraBars--;
+                    }
+                    //NSLog(@"tick");
+                }
+                
+                for (NSUInteger j = 0; j < quantizedBlockQueue.count; j++)
+                {
+                    QuantizedBlock *qb = quantizedBlockQueue[j];
+                    int interval = (int)(qb.interval*96);
+                    if (num96notes % interval == 0 && qb.extraBars <= 0)
+                    {
+                        //run the block on the main thread to allow UI updates etc
+                        if(qb.executeOnMainThread)
+                            dispatch_async(dispatch_get_main_queue(), qb.block);
+                        else
+                            qb.block();
+                        
+                        [quantizedBlockQueue removeObjectAtIndex:j];
+                        j--;
+                    }
+                }
 				
-				for (NSUInteger j = 0; j < quantizedBlockQueue.count; j++)
-				{
-					QuantizedBlock *qb = quantizedBlockQueue[j];
-					int interval = (int)(qb.interval*96);
-					if (num96notes % interval == 0 && qb.extraBars <= 0)
-					{
-						//run the block on the main thread to allow UI updates etc
-						dispatch_async(dispatch_get_main_queue(), qb.block);
-						[quantizedBlockQueue removeObjectAtIndex:j];
-						i--;
-					}
-				}
-
 				num96notes = (num96notes + 1) % 96;
 			}
 			
@@ -175,7 +185,8 @@ static PGMidiSession *shared = nil;
 			
             if(previousClockTime > 0 && currentClockTime > 0)
             {
-                double intervalInNanoseconds = convertTimeInNanoseconds(currentClockTime-previousClockTime);
+                tickDelta = currentClockTime-previousClockTime;
+                intervalInNanoseconds = [self convertTimeInNanoseconds:(uint64_t)tickDelta];
                 bpm = (1000000 / intervalInNanoseconds / 24) * 60;
             }
         }
@@ -198,49 +209,85 @@ static PGMidiSession *shared = nil;
 			playing = YES;
 			//reset to 0 -- the immediate next MIDI clock signal will be the downbeat of 1
 			num96notes = 0;
+            intervalInNanoseconds = 0;
 		}
 		else if (status == VVMIDIStopVal)
 		{
 			playing = NO;
+            intervalInNanoseconds = 0;
 		}
 		
         packet = MIDIPacketNext(packet);
     }
 }
 
-- (void) sendPitchWheelChannel:(int32_t)channel withLSBValue:(int32_t)lsb withMSBValue:(int32_t)msb
+- (void) sendPitchWheel:(int)channel withLSBValue:(int)lsb withMSBValue:(int)msb
 {
     int32_t midiChannel = VVMIDIPitchWheelVal + channel - 1;
     
-	const UInt8 message[]  = { midiChannel, lsb, msb };
+	const UInt8 message[]  = { (UInt8)midiChannel, (UInt8)lsb, (UInt8)msb };
 	[midi sendBytes:message size:sizeof(message)];
 }
 
-- (void) sendCC:(int32_t)cc withChannel:(int32_t)channel withValue:(int32_t)value
+- (void) sendCC:(int)cc withChannel:(int)channel withValue:(int)value
 {
     int32_t midiChannel = VVMIDIControlChangeVal + channel - 1;
     
-	const UInt8 cntrl[]  = { midiChannel, cc, value };
+	const UInt8 cntrl[]  = { (UInt8)midiChannel, (UInt8)cc, (UInt8)value };
 	[midi sendBytes:cntrl size:sizeof(cntrl)];
 }
 
-- (void) sendNoteOn:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity
+- (void) sendNoteOn:(int)note withChannel:(int)channel withVelocity:(int)velocity quantizedToInterval:(double)quantize
+{
+    //calculate 1st Byte value (channel)
+    int32_t midiChannelForNoteOn = VVMIDINoteOnVal + channel - 1;
+    
+    //Calculate MIDI timestamp at which the note should be triggered according to the quantize division
+    //This is using the MIDI timestamp we got from each clock message and  the interval between 2 clock message for better accuracy.
+    int ticks = (int)(quantize*96);
+    int remainingTicks = ticks - (num96notes - (num96notes/ticks)*ticks);
+    double triggerTimeStamp = currentClockTime + tickDelta * remainingTicks;
+
+    //check if the current note was already triggered during the current tick interval
+    //We dont want to send multiple times the same note within the same interval.
+    NSString *midiMessageUID = [NSString stringWithFormat:@"%d%d",midiChannelForNoteOn,note];
+    for(NSUInteger i=0;i<[quantizedNoteQueue count];i++)
+        if([((NSString*)[quantizedNoteQueue objectAtIndex:i]) isEqualToString:midiMessageUID])
+            return;
+    
+    //prepare MIDI packet
+    UInt8 message[] = { (UInt8)midiChannelForNoteOn, (UInt8)note, (UInt8)velocity };
+    
+    //Send note
+    [midi sendBytes:message size:sizeof(message) withTime:(UInt64)triggerTimeStamp];
+
+    //Add the note that was just queued in CoreMIDI in the quantize queue 
+    [quantizedNoteQueue addObject:midiMessageUID];
+    
+    //Delete the note from the queue as soon as it's triggered
+    //This is an approximate call because the note triggered by CoreMIDI at a given interval will be much more accurate
+    [self performBlock:^{
+        [quantizedNoteQueue removeObject:midiMessageUID];
+    } quantizedToInterval:quantize];
+}
+
+- (void) sendNoteOn:(int)note withChannel:(int)channel withVelocity:(int)velocity
 {
     int32_t midiChannelForNoteOn = VVMIDINoteOnVal + channel - 1;
     
-	const UInt8 noteOn[]  = { midiChannelForNoteOn, note, velocity };
+	const UInt8 noteOn[]  = { (UInt8)midiChannelForNoteOn, (UInt8)note, (UInt8)velocity };
 	[midi sendBytes:noteOn size:sizeof(noteOn)];
 }
 
-- (void) sendNoteOff:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity
+- (void) sendNoteOff:(int)note withChannel:(int)channel withVelocity:(int)velocity
 {
     int32_t midiChannelForNoteOff = VVMIDINoteOffVal + channel - 1;
     
-	const UInt8 noteOff[]  = { midiChannelForNoteOff, note, velocity };
+	const UInt8 noteOff[]  = { (UInt8)midiChannelForNoteOff, (UInt8)note, (UInt8)velocity };
     [midi sendBytes:noteOff size:sizeof(noteOff)];
 }
 
-- (void) sendNote:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity withLength:(NSTimeInterval)length
+- (void) sendNote:(int)note withChannel:(int)channel withVelocity:(int)velocity withLength:(NSTimeInterval)length
 {
     [self sendNoteOn:note withChannel:channel withVelocity:velocity];
 
@@ -249,6 +296,21 @@ static PGMidiSession *shared = nil;
 	{
 		[self sendNoteOff:note withChannel:channel withVelocity:0];
 	});
+}
+
+-(uint64_t) convertTimeInNanoseconds:(uint64_t)time
+{
+    const int64_t kOneThousand = 1000;
+    static mach_timebase_info_data_t s_timebase_info;
+	
+    if (s_timebase_info.denom == 0)
+    {
+        (void) mach_timebase_info(&s_timebase_info);
+    }
+	
+    // mach_absolute_time() returns billionth of seconds,
+    // so divide by one thousand to get nanoseconds
+    return (uint64_t)((time * s_timebase_info.numer) / (kOneThousand * s_timebase_info.denom));
 }
 
 
