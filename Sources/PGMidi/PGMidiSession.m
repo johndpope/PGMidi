@@ -3,14 +3,15 @@
 //  PGMidi
 //
 //  Created by Dan Hassin on 1/19/13.
-//
+//  Modified by Yaniv De Ridder
 //
 
 #import "PGMidiSession.h"
+#import "PGMidiMessage.h"
 
 @interface QuantizedBlock : NSObject
 
-@property (copy) void(^block)();
+@property (atomic,copy) void(^block)();
 @property (nonatomic) double interval;
 @property (nonatomic) int extraBars;
 @property (nonatomic) BOOL executeOnMainThread;
@@ -22,9 +23,6 @@
 @synthesize block, interval, extraBars,executeOnMainThread;
 
 @end
-
-
-/* BPM calculation helper */
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -109,31 +107,8 @@ static PGMidiSession *shared = nil;
 	return self;
 }
 
-- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)bars
-{
-	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
-    [qb setExecuteOnMainThread:YES];
-    [quantizedBlockQueue addObject:qb];
-}
-
-- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars
-{
-	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
-    [quantizedBlockQueue addObject:qb];
-}
-
-- (QuantizedBlock*) createQuantizedBlock:(void (^)(void))block quantizedToInterval:(double)bars
-{
-    QuantizedBlock *qb = [[QuantizedBlock alloc] init];
-	qb.block = block;
-	qb.extraBars = (int)bars; //truncate to a whole number
-	qb.interval =  bars-qb.extraBars; //get the decimal part
-	if (qb.interval == 0)
-		qb.interval = 1; //if the interval is on a 1 downbeat it'll be 0
-	NSLog(@"after %d bars, will run at the %d (currently on %d)",qb.extraBars,(int)(qb.interval*96),num96notes);
-    
-    return qb;
-}
+//==============================================================================
+#pragma mark PGMidiSessionDelegate 
 
 - (void) midiSource:(PGMidiSource *)source midiReceived:(const MIDIPacketList *)packetList
 {
@@ -186,7 +161,7 @@ static PGMidiSession *shared = nil;
             if(previousClockTime > 0 && currentClockTime > 0)
             {
                 tickDelta = currentClockTime-previousClockTime;
-                intervalInNanoseconds = [self convertTimeInNanoseconds:(uint64_t)tickDelta];
+                intervalInNanoseconds = [self convertTimeInNanoseconds:(Float64)tickDelta];
                 bpm = (1000000 / intervalInNanoseconds / 24) * 60;
             }
         }
@@ -221,84 +196,159 @@ static PGMidiSession *shared = nil;
     }
 }
 
-- (void) sendPitchWheel:(int)channel withLSBValue:(int)lsb withMSBValue:(int)msb
+//==============================================================================
+#pragma mark Quantized Perform 
+
+- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)bars
 {
-    int32_t midiChannel = VVMIDIPitchWheelVal + channel - 1;
-    
-	const UInt8 message[]  = { (UInt8)midiChannel, (UInt8)lsb, (UInt8)msb };
-	[midi sendBytes:message size:sizeof(message)];
+	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
+    [qb setExecuteOnMainThread:YES];
+    [quantizedBlockQueue addObject:qb];
 }
 
-- (void) sendCC:(int)cc withChannel:(int)channel withValue:(int)value
+- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars
 {
-    int32_t midiChannel = VVMIDIControlChangeVal + channel - 1;
-    
-	const UInt8 cntrl[]  = { (UInt8)midiChannel, (UInt8)cc, (UInt8)value };
-	[midi sendBytes:cntrl size:sizeof(cntrl)];
+	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
+    [quantizedBlockQueue addObject:qb];
 }
 
-- (void) sendNoteOn:(int)note withChannel:(int)channel withVelocity:(int)velocity quantizedToInterval:(double)quantize
-{
-    //calculate 1st Byte value (channel)
-    int32_t midiChannelForNoteOn = VVMIDINoteOnVal + channel - 1;
-    
-    //Calculate MIDI timestamp at which the note should be triggered according to the quantize division
-    //This is using the MIDI timestamp we got from each clock message and  the interval between 2 clock message for better accuracy.
-    int ticks = (int)(quantize*96);
-    int remainingTicks = ticks - (num96notes - (num96notes/ticks)*ticks);
-    double triggerTimeStamp = currentClockTime + tickDelta * remainingTicks;
+//==============================================================================
+#pragma mark MIDI Output API
 
+- (void)sendMidiMessage:(PGMidiMessage*)message
+{   
+    [self sendMidiMessage:message useMessageTimeStamp:NO];
+}
+
+- (void)sendMidiMessage:(PGMidiMessage*)message useMessageTimeStamp:(BOOL)useTimeStamp
+{
+    if(useTimeStamp)
+    {
+        [midi sendBytes:[message toBytes].bytes size:sizeof([message toBytes].bytes) withTime:message.triggerTimeStamp];
+    }
+    else
+    {
+        [self sendMidiMessage:message];
+    }
+}
+
+- (void)sendMidiMessage:(PGMidiMessage*)message afterDelay:(NSTimeInterval)delay
+{
+    message.triggerTimeStamp = mach_absolute_time() + (delay * NSEC_PER_SEC);
+    
+    [self sendMidiMessage:message useMessageTimeStamp:YES];
+}
+
+- (void) sendMidiMessage:(PGMidiMessage *)message quantizedToFraction:(double)quantize
+{
+    //Calculate trigger timestamp
+    [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:quantize]];
+    
     //check if the current note was already triggered during the current tick interval
     //We dont want to send multiple times the same note within the same interval.
-    NSString *midiMessageUID = [NSString stringWithFormat:@"%d%d",midiChannelForNoteOn,note];
     for(NSUInteger i=0;i<[quantizedNoteQueue count];i++)
-        if([((NSString*)[quantizedNoteQueue objectAtIndex:i]) isEqualToString:midiMessageUID])
+    {
+        PGMidiMessage* currentMessage = [quantizedNoteQueue objectAtIndex:i];
+        
+        if([currentMessage isEqualToMessage:message])
             return;
+    }
     
-    //prepare MIDI packet
-    UInt8 message[] = { (UInt8)midiChannelForNoteOn, (UInt8)note, (UInt8)velocity };
+    //Send Message to CoreMIDI
+    [self sendMidiMessage:message useMessageTimeStamp:YES];
     
-    //Send note
-    [midi sendBytes:message size:sizeof(message) withTime:(UInt64)triggerTimeStamp];
-
-    //Add the note that was just queued in CoreMIDI in the quantize queue 
-    [quantizedNoteQueue addObject:midiMessageUID];
+    //Add the note that was just queued in CoreMIDI in the quantize queue
+    [quantizedNoteQueue addObject:message];
     
     //Delete the note from the queue as soon as it's triggered
     //This is an approximate call because the note triggered by CoreMIDI at a given interval will be much more accurate
     [self performBlock:^{
-        [quantizedNoteQueue removeObject:midiMessageUID];
+        [quantizedNoteQueue removeObject:message];
     } quantizedToInterval:quantize];
 }
 
-- (void) sendNoteOn:(int)note withChannel:(int)channel withVelocity:(int)velocity
+- (void)sendMidiMessage:(PGMidiMessage*)message quantizedToFraction:(double)quantize withQuantizedNoteOffStrategy:(QuantizedNoteOffStrategy)strategy
 {
-    int32_t midiChannelForNoteOn = VVMIDINoteOnVal + channel - 1;
+    //Calculate trigger timestamp
+    [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:quantize]];
     
-	const UInt8 noteOn[]  = { (UInt8)midiChannelForNoteOn, (UInt8)note, (UInt8)velocity };
-	[midi sendBytes:noteOn size:sizeof(noteOn)];
-}
-
-- (void) sendNoteOff:(int)note withChannel:(int)channel withVelocity:(int)velocity
-{
-    int32_t midiChannelForNoteOff = VVMIDINoteOffVal + channel - 1;
+    for(NSUInteger i=0;i<[quantizedNoteQueue count];i++)
+    {
+        PGMidiMessage* currentMessage = [quantizedNoteQueue objectAtIndex:i];
+        
+        //check if the current note was already triggered during the current tick interval
+        //We dont want to send multiple times the same note within the same interval.
+        if([currentMessage isEqualToMessage:message])
+            return;
+        
+        //Note On of the current Note Off found in the same interval
+        //To avoid not hearing the note because the note on and off are going to be triggered at the exact same time
+        //-> Apply note off strategy:
+        //  1. We take the interval between when the note on was triggered and now and apply the same interval
+        //  2. We defer the Note Off until the next quantize step
+        if(message.status == PGMIDINoteOffStatus &&
+           currentMessage.status == PGMIDINoteOnStatus &&
+           currentMessage.channel == message.channel &&
+           currentMessage.value1 == currentMessage.value1)
+        {
+            if(strategy == QuantizedNoteOffStrategySameLength)
+            {
+                message.triggerTimeStamp = currentMessage.triggerTimeStamp + (mach_absolute_time() -  currentMessage.triggerTimeStamp);
+            }
+            else if(strategy == QuantizedNoteOffStrategyOneStep)
+            {
+                NSLog(@"NOTEOFF ONE STEP");
+                quantize = quantize * 2;
+                [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:quantize]];
+            }
+            
+            break;
+        }
+    }
     
-	const UInt8 noteOff[]  = { (UInt8)midiChannelForNoteOff, (UInt8)note, (UInt8)velocity };
-    [midi sendBytes:noteOff size:sizeof(noteOff)];
+    //Send Message to CoreMIDI
+    [self sendMidiMessage:message useMessageTimeStamp:YES];
+    
+    //Add the note that was just queued in CoreMIDI in the quantize queue
+    [quantizedNoteQueue addObject:message];
+    
+    //Delete the note from the queue as soon as it's triggered
+    //This is an approximate call because the note triggered by CoreMIDI at a given interval will be much more accurate
+    [self performBlock:^{
+        [quantizedNoteQueue removeObject:message];
+    } quantizedToInterval:quantize];
 }
 
-- (void) sendNote:(int)note withChannel:(int)channel withVelocity:(int)velocity withLength:(NSTimeInterval)length
+//==============================================================================
+#pragma mark Internal Utils
+
+- (QuantizedBlock*) createQuantizedBlock:(void (^)(void))block quantizedToInterval:(double)bars
 {
-    [self sendNoteOn:note withChannel:channel withVelocity:velocity];
-
-	dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, length * NSEC_PER_SEC);
-	dispatch_after(popTime, dispatch_get_main_queue(), ^(void)
-	{
-		[self sendNoteOff:note withChannel:channel withVelocity:0];
-	});
+    QuantizedBlock *qb = [[QuantizedBlock alloc] init];
+	qb.block = block;
+	qb.extraBars = (int)bars; //truncate to a whole number
+	qb.interval =  bars-qb.extraBars; //get the decimal part
+	if (qb.interval == 0)
+		qb.interval = 1; //if the interval is on a 1 downbeat it'll be 0
+	NSLog(@"after %d bars, will run at the %d (currently on %d)",qb.extraBars,(int)(qb.interval*96),num96notes);
+    
+    return qb;
 }
 
--(uint64_t) convertTimeInNanoseconds:(uint64_t)time
+//Calculate MIDI timestamp at which the note should be triggered according to the quantize division
+//This is using the MIDI timestamp we got from each clock message and  the interval between 2 clock message for better accuracy.
+- (MIDITimeStamp) calculateMIDITimeStampWithQuantize:(double)quantize
+{
+    int ticks = (int)(quantize*96);
+    int remainingTicks = ticks - (num96notes - (num96notes/ticks)*ticks);
+    double triggerTimeStamp = currentClockTime + tickDelta * remainingTicks;
+    
+    return (MIDITimeStamp)triggerTimeStamp;
+}
+
+//Using Float64 to avoid integer overflow
+//UINT64_MAX / mach_timebase_info.denom = 3074.457E+9 nanoseconds = 51 minutes
+-(uint64_t) convertTimeInNanoseconds:(Float64)time
 {
     const int64_t kOneThousand = 1000;
     static mach_timebase_info_data_t s_timebase_info;

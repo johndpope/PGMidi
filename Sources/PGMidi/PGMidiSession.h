@@ -3,11 +3,13 @@
 //  PGMidi
 //
 //  Created by Dan Hassin on 1/19/13.
-//
+//  Modified by Yaniv De Ridder
 //
 
 #import <Foundation/Foundation.h>
 #import "PGMidi.h"
+
+@class PGMidiMessage;
 
 /*
  PGMidiSession is an addition to PGMidi specifically designed for use with a DAW.
@@ -40,6 +42,12 @@
  If you're having trouble setting this whole thing up, remember you can connect your device via network session in Audio MIDI Setup.app, under Network in the MIDI window.
  */
 
+typedef enum  {
+    QuantizedNoteOffStrategyNone,
+    QuantizedNoteOffStrategySameLength,
+    QuantizedNoteOffStrategyOneStep
+} QuantizedNoteOffStrategy;
+
 @protocol PGMidiSessionDelegate;
 
 @interface PGMidiSession : NSObject <PGMidiSourceDelegate>
@@ -51,19 +59,12 @@
 
 + (PGMidiSession *) sharedSession;
 
-/* 
- The methods below are used to send Control Change or Note.
- The channel argument is a value between 1 and 16
- */
-- (void) sendCC:(int32_t)cc withChannel:(int32_t)channel withValue:(int32_t)value;
-- (void) sendPitchWheel:(int)channel withLSBValue:(int)lsb withMSBValue:(int)msb;
+- (void)sendMidiMessage:(PGMidiMessage*)message;
+- (void)sendMidiMessage:(PGMidiMessage*)message useMessageTimeStamp:(BOOL)useTimeStamp;
+- (void)sendMidiMessage:(PGMidiMessage*)message afterDelay:(NSTimeInterval)delay;
+- (void)sendMidiMessage:(PGMidiMessage*)message quantizedToFraction:(double)quantize;
+- (void)sendMidiMessage:(PGMidiMessage*)message quantizedToFraction:(double)quantize withQuantizedNoteOffStrategy:(QuantizedNoteOffStrategy)strategy;
 
-- (void) sendNoteOn:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
-- (void) sendNoteOn:(int)note withChannel:(int)channel withVelocity:(int)velocity quantizedToInterval:(double)quantize;
-
-- (void) sendNoteOff:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity;
-
-- (void) sendNote:(int32_t)note withChannel:(int32_t)channel withVelocity:(int32_t)velocity withLength:(NSTimeInterval)length;
 
 /* 
  In case you need to update some UI elements at a givent quantization division, this will do the trick..
