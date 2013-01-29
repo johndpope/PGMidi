@@ -7,7 +7,6 @@
 //
 
 #import "PGMidiSession.h"
-#import "PGMidiMessage.h"
 
 @interface QuantizedBlock : NSObject
 
@@ -217,18 +216,17 @@ static PGMidiSession *shared = nil;
 
 - (void)sendMidiMessage:(PGMidiMessage*)message
 {   
-    [self sendMidiMessage:message useMessageTimeStamp:NO];
-}
-
-- (void)sendMidiMessage:(PGMidiMessage*)message useMessageTimeStamp:(BOOL)useTimeStamp
-{
-    if(useTimeStamp)
+    [message setReceivedTimeStamp:mach_absolute_time()];
+    
+    //If the trigger time stamp is defined then use it.
+    if(message.triggerTimeStamp > 0)
     {
         [midi sendBytes:[message toBytes].bytes size:sizeof([message toBytes].bytes) withTime:message.triggerTimeStamp];
     }
+    //otherwise we simply trigger the midi message straight away
     else
     {
-        [self sendMidiMessage:message];
+        [midi sendBytes:[message toBytes].bytes size:sizeof([message toBytes].bytes)];
     }
 }
 
@@ -236,38 +234,10 @@ static PGMidiSession *shared = nil;
 {
     message.triggerTimeStamp = mach_absolute_time() + (delay * NSEC_PER_SEC);
     
-    [self sendMidiMessage:message useMessageTimeStamp:YES];
+    [self sendMidiMessage:message];
 }
 
 - (void) sendMidiMessage:(PGMidiMessage *)message quantizedToFraction:(double)quantize
-{
-    //Calculate trigger timestamp
-    [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:quantize]];
-    
-    //check if the current note was already triggered during the current tick interval
-    //We dont want to send multiple times the same note within the same interval.
-    for(NSUInteger i=0;i<[quantizedNoteQueue count];i++)
-    {
-        PGMidiMessage* currentMessage = [quantizedNoteQueue objectAtIndex:i];
-        
-        if([currentMessage isEqualToMessage:message])
-            return;
-    }
-    
-    //Send Message to CoreMIDI
-    [self sendMidiMessage:message useMessageTimeStamp:YES];
-    
-    //Add the note that was just queued in CoreMIDI in the quantize queue
-    [quantizedNoteQueue addObject:message];
-    
-    //Delete the note from the queue as soon as it's triggered
-    //This is an approximate call because the note triggered by CoreMIDI at a given interval will be much more accurate
-    [self performBlock:^{
-        [quantizedNoteQueue removeObject:message];
-    } quantizedToInterval:quantize];
-}
-
-- (void)sendMidiMessage:(PGMidiMessage*)message quantizedToFraction:(double)quantize withQuantizedNoteOffStrategy:(QuantizedNoteOffStrategy)strategy
 {
     //Calculate trigger timestamp
     [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:quantize]];
@@ -291,23 +261,29 @@ static PGMidiSession *shared = nil;
            currentMessage.channel == message.channel &&
            currentMessage.value1 == currentMessage.value1)
         {
-            if(strategy == QuantizedNoteOffStrategySameLength)
+            if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategySameLength)
             {
-                message.triggerTimeStamp = currentMessage.triggerTimeStamp + (mach_absolute_time() -  currentMessage.triggerTimeStamp);
+                message.triggerTimeStamp += (mach_absolute_time() - currentMessage.receivedTimeStamp);
             }
-            else if(strategy == QuantizedNoteOffStrategyOneStep)
+            else if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategyOneStep)
             {
-                NSLog(@"NOTEOFF ONE STEP");
-                quantize = quantize * 2;
-                [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:quantize]];
+                message.triggerTimeStamp = currentMessage.triggerTimeStamp + (tickDelta*quantize*96);//[self calculateMIDITimeStampWithQuantize:quantize withStepDelay:1];
             }
-            
+            else if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategyNone)
+            {
+                //Nothing
+            }
+
             break;
         }
     }
     
     //Send Message to CoreMIDI
-    [self sendMidiMessage:message useMessageTimeStamp:YES];
+    [self sendMidiMessage:message];
+    
+    
+    //if(message.status == PGMIDINoteOffStatus)
+    //    return;
     
     //Add the note that was just queued in CoreMIDI in the quantize queue
     [quantizedNoteQueue addObject:message];
@@ -317,6 +293,12 @@ static PGMidiSession *shared = nil;
     [self performBlock:^{
         [quantizedNoteQueue removeObject:message];
     } quantizedToInterval:quantize];
+    
+    //dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(message.triggerTimeStamp - mach_absolute_time()));
+    //dispatch_after(popTime, dispatch_get_main_queue(), ^(void)
+    //          {
+    //              [quantizedNoteQueue removeObject:message];
+    //          });
 }
 
 //==============================================================================
@@ -339,8 +321,13 @@ static PGMidiSession *shared = nil;
 //This is using the MIDI timestamp we got from each clock message and  the interval between 2 clock message for better accuracy.
 - (MIDITimeStamp) calculateMIDITimeStampWithQuantize:(double)quantize
 {
-    int ticks = (int)(quantize*96);
-    int remainingTicks = ticks - (num96notes - (num96notes/ticks)*ticks);
+    return [self calculateMIDITimeStampWithQuantize:quantize withStepDelay:0];
+}
+
+- (MIDITimeStamp) calculateMIDITimeStampWithQuantize:(double)quantize withStepDelay:(double)stepDelay
+{
+    double ticks = quantize*96;
+    double remainingTicks = ticks - fmod(num96notes,ticks) + (ticks*stepDelay);
     double triggerTimeStamp = currentClockTime + tickDelta * remainingTicks;
     
     return (MIDITimeStamp)triggerTimeStamp;

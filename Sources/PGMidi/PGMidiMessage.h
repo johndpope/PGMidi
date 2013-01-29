@@ -19,6 +19,12 @@ typedef struct
     UInt8 bytes[3];
 } MIDIMessageStruct;
 
+typedef enum  {
+    QuantizedNoteOffStrategyNone,
+    QuantizedNoteOffStrategySameLength,
+    QuantizedNoteOffStrategyOneStep
+} QuantizedNoteOffStrategy;
+
 @interface PGMidiMessage : NSObject
 
 @property (nonatomic) int status;
@@ -26,10 +32,18 @@ typedef struct
 @property (nonatomic) int value1; //Note, CC, LSB
 @property (nonatomic) int value2; //Velocity, Value, MSB
 
-@property (nonatomic) MIDITimeStamp triggerTimeStamp; //time at which the note is triggered
+//Time at which the message was received.
+//Used to calculate Note Off length in case of QuantizationNoteOffStrategy set to Original Length
+@property (nonatomic) MIDITimeStamp receivedTimeStamp;
+
+//Time at which the message should be triggered.
+@property (nonatomic) MIDITimeStamp triggerTimeStamp;
+
+@property (nonatomic) QuantizedNoteOffStrategy quantizedNoteOffStrategy;
 
 +(PGMidiMessage*) noteOn:(int)note withVelocity:(int)velocity withChannel:(int)channel;
 +(PGMidiMessage*) noteOff:(int)note withVelocity:(int)velocity withChannel:(int)channel;
++(PGMidiMessage*) noteOff:(int)note withVelocity:(int)velocity withChannel:(int)channel withQuantizedNoteOffStrategy:(QuantizedNoteOffStrategy)strategy;
 +(PGMidiMessage*) controlChange:(int)cc withValue:(int)value withChannel:(int)channel;
 +(PGMidiMessage*) pitchWheel:(int)lsb withMSB:(int)msb withChannel:(int)channel;
 

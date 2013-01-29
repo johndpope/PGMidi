@@ -8,16 +8,21 @@
 
 #import "MidiMonitorViewController.h"
 
+#import "PGMidiMessage.h"
+#import "PGMidiSession.h"
 #import "PGMidi.h"
 #import "iOSVersionDetection.h"
 #import <CoreMIDI/CoreMIDI.h>
 
 UInt8 RandomNoteNumber() { return UInt8(rand() / (RAND_MAX / 127)); }
 
-@interface MidiMonitorViewController () <PGMidiDelegate, PGMidiSourceDelegate>
+@interface MidiMonitorViewController () {
+    PGMidiSession *session;
+}
+/*
 - (void) updateCountLabel;
 - (void) addString:(NSString*)string;
-- (void) sendMidiDataInBackground;
+- (void) sendMidiDataInBackground;*/
 @end
 
 @implementation MidiMonitorViewController
@@ -26,23 +31,26 @@ UInt8 RandomNoteNumber() { return UInt8(rand() / (RAND_MAX / 127)); }
 
 @synthesize countLabel;
 @synthesize textView;
-@synthesize midi;
+//@synthesize midi;
+@synthesize sendButton;
 
 #pragma mark UIViewController
 
 - (void) viewWillAppear:(BOOL)animated
 {
-    [self clearTextView];
-    [self updateCountLabel];
+    session = [PGMidiSession sharedSession];
+    
+    // [self clearTextView];
+    //[self updateCountLabel];
 
-    IF_IOS_HAS_COREMIDI
+    /*IF_IOS_HAS_COREMIDI
     (
          [self addString:@"This iOS Version supports CoreMIDI"];
     )
     else
     {
         [self addString:@"You are running iOS before 4.2. CoreMIDI is not supported."];
-    }
+    }*/
 }
 
 #pragma mark IBActions
@@ -61,7 +69,7 @@ NSString *ToString(PGMidiConnection *connection)
 }
 - (IBAction) listAllInterfaces
 {
-    IF_IOS_HAS_COREMIDI
+    /*IF_IOS_HAS_COREMIDI
     ({
         [self addString:@"\n\nInterface list:"];
         for (PGMidiSource *source in midi.sources)
@@ -75,7 +83,37 @@ NSString *ToString(PGMidiConnection *connection)
             NSString *description = [NSString stringWithFormat:@"Destination: %@", ToString(destination)];
             [self addString:description];
         }
-    })
+    })*/
+}
+
+- (IBAction) sendNoteOn0
+{
+    [session sendMidiMessage:[PGMidiMessage noteOn:0 withVelocity:127 withChannel:1] quantizedToFraction:0.25];
+}
+
+- (IBAction) sendNoteOff0
+{
+    [session sendMidiMessage:[PGMidiMessage noteOff:0 withVelocity:127 withChannel:1 withQuantizedNoteOffStrategy:QuantizedNoteOffStrategySameLength] quantizedToFraction:0.25];
+}
+
+- (IBAction) sendNoteOn1
+{
+    [session sendMidiMessage:[PGMidiMessage noteOn:1 withVelocity:127 withChannel:1] quantizedToFraction:0.25];
+}
+
+- (IBAction) sendNoteOff1
+{
+    [session sendMidiMessage:[PGMidiMessage noteOff:1 withVelocity:127 withChannel:1 withQuantizedNoteOffStrategy:QuantizedNoteOffStrategyOneStep] quantizedToFraction:0.25];
+}
+
+- (IBAction) sendNoteOn2
+{
+    [session sendMidiMessage:[PGMidiMessage noteOn:2 withVelocity:127 withChannel:1] quantizedToFraction:0.25];
+}
+
+- (IBAction) sendNoteOff2
+{
+    [session sendMidiMessage:[PGMidiMessage noteOff:2 withVelocity:127 withChannel:1] quantizedToFraction:0.25];
 }
 
 - (IBAction) sendMidiData
@@ -85,7 +123,7 @@ NSString *ToString(PGMidiConnection *connection)
 
 #pragma mark Shenanigans
 
-- (void) attachToAllExistingSources
+/*- (void) attachToAllExistingSources
 {
     for (PGMidiSource *source in midi.sources)
     {
@@ -183,6 +221,6 @@ NSString *StringFromPacket(const MIDIPacket *packet)
         [NSThread sleepForTimeInterval:0.1];
         [midi sendBytes:noteOff size:sizeof(noteOff)];
     }
-}
+}*/
 
 @end

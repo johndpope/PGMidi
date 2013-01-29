@@ -8,8 +8,7 @@
 
 #import <Foundation/Foundation.h>
 #import "PGMidi.h"
-
-@class PGMidiMessage;
+#import "PGMidiMessage.h"
 
 /*
  PGMidiSession is an addition to PGMidi specifically designed for use with a DAW.
@@ -17,11 +16,15 @@
  How do I use this class?
  It's simple, and requires no client-side setup! You can go right into these (although setting a delegate first thing is preferred to instantiate the singleton and give it time to connect to MIDI sources/destinations).
  
- Sending a note/CC:
-	 [[PGMidiSession sharedSession] sendNoteOn:36 withChannel:1 withVelocity:127];
-     [[PGMidiSession sharedSession] sendNoteOff:36 withChannel:1 withVelocity:127];
-	 [[PGMidiSession sharedSession] sendNote:36 withChannel:1 withVelocity:120 withLength:1];
-	 [[PGMidiSession sharedSession] sendCC:5 withChannel:1 withValue:127];
+ Sending note on/off:
+ 
+     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage noteOn:0 withVelocity:127 withChannel:1]];
+     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage noteOff:0 withVelocity:127 withChannel:1]];
+ 
+ Sending CC or PitchWheel:
+ 
+     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage controlChange:0 withValue:60 withChannel:1]];
+     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage pitchWheel:60 withMSB:0 withChannel:1]];
  
  Accessing BPM:
 	 [PGMidiSession sharedSession].bpm
@@ -29,10 +32,21 @@
  Receiving MIDI data:
 	 Set [PGMidiSession sharedSession].delegate to a PGMidiSourceDelegate and implement the two delegate methods!
  
- Quantization (the main reason I wrote this class):
-	 [[PGMidiSession sharedSession] performBlock:^{ NSLog(@"HI"); } quantizedToInterval:1];    // Prints "HI" on the next downbeat of a new bar
-	 [[PGMidiSession sharedSession] performBlock:^{ NSLog(@"HI"); } quantizedToInterval:0.25]; // Prints "HI" on the next quarter note
-	 [[PGMidiSession sharedSession] performBlock:^{ NSLog(@"HI"); } quantizedToInterval:1.25]; // Waits till the next bar, then prints "HI" on the next quarter note
+ Quantization:
+ 
+ performBlock and performBlockOnMainThread methods let you trigger a block at a given quantization fraction.
+ Must only be used to trigger UI in sync with the BPM/Quantize or to do internal logic but should NOT be used to trigger midi messages.
+ To trigger midi messages please use sendMidiMessage:quantizedToFraction
+ 
+ You can perform on the main thread (most likely for UI stuff)
+ 
+     [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:1];    // Prints "HI" on the next downbeat of a new bar
+     [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:0.25]; // Prints "HI" on the next quarter note
+     [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:1.25]; // Waits till the next bar, then prints "HI" on the next quarter note
+ 
+ Or you can perform straight in the high priority thread used by CoreMIDI
+ 
+     [[PGMidiSession sharedSession] performBlock:^{ ... } quantizedToInterval:1];  
  
  
  Troubleshooting:
@@ -41,12 +55,6 @@
  
  If you're having trouble setting this whole thing up, remember you can connect your device via network session in Audio MIDI Setup.app, under Network in the MIDI window.
  */
-
-typedef enum  {
-    QuantizedNoteOffStrategyNone,
-    QuantizedNoteOffStrategySameLength,
-    QuantizedNoteOffStrategyOneStep
-} QuantizedNoteOffStrategy;
 
 @protocol PGMidiSessionDelegate;
 
@@ -60,11 +68,8 @@ typedef enum  {
 + (PGMidiSession *) sharedSession;
 
 - (void)sendMidiMessage:(PGMidiMessage*)message;
-- (void)sendMidiMessage:(PGMidiMessage*)message useMessageTimeStamp:(BOOL)useTimeStamp;
 - (void)sendMidiMessage:(PGMidiMessage*)message afterDelay:(NSTimeInterval)delay;
 - (void)sendMidiMessage:(PGMidiMessage*)message quantizedToFraction:(double)quantize;
-- (void)sendMidiMessage:(PGMidiMessage*)message quantizedToFraction:(double)quantize withQuantizedNoteOffStrategy:(QuantizedNoteOffStrategy)strategy;
-
 
 /* 
  In case you need to update some UI elements at a givent quantization division, this will do the trick..

@@ -10,7 +10,7 @@
 
 @implementation PGMidiMessage
 
-@synthesize status,channel,value1,value2,triggerTimeStamp;
+@synthesize status,channel,value1,value2,triggerTimeStamp,receivedTimeStamp,quantizedNoteOffStrategy;
 
 +(PGMidiMessage*) noteOn:(int)note withVelocity:(int)velocity withChannel:(int)_channel
 {
@@ -19,7 +19,15 @@
 
 +(PGMidiMessage*) noteOff:(int)note withVelocity:(int)velocity withChannel:(int)_channel
 {
-    return [[PGMidiMessage alloc] initWithStatus:PGMIDINoteOffStatus withChannel:_channel withValue1:note withValue2:velocity];
+    return [PGMidiMessage noteOff:note withVelocity:velocity withChannel:_channel withQuantizedNoteOffStrategy:QuantizedNoteOffStrategyNone];
+}
+
++(PGMidiMessage*) noteOff:(int)note withVelocity:(int)velocity withChannel:(int)_channel withQuantizedNoteOffStrategy:(QuantizedNoteOffStrategy)strategy
+{
+    PGMidiMessage* message = [[PGMidiMessage alloc] initWithStatus:PGMIDINoteOffStatus withChannel:_channel withValue1:note withValue2:velocity];
+    message.quantizedNoteOffStrategy = strategy;
+    
+    return message;
 }
 
 +(PGMidiMessage*) controlChange:(int)cc withValue:(int)value withChannel:(int)_channel
@@ -44,6 +52,7 @@
         value2 = _value2;
         
         triggerTimeStamp = 0;
+        receivedTimeStamp = 0;
     }
     
     return self;
