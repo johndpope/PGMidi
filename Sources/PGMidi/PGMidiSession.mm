@@ -1,5 +1,5 @@
 //
-//  PGMidiSession.m
+//  PGMidiSession.mm
 //  PGMidi
 //
 //  Created by Dan Hassin on 1/19/13.
@@ -8,23 +8,12 @@
 
 #import "PGMidiSession.h"
 
-@interface QuantizedBlock : NSObject
-
-@property (atomic,copy) void(^block)();
-@property (nonatomic) double interval;
-@property (nonatomic) int extraBars;
-@property (nonatomic) BOOL executeOnMainThread;
-
-@end
-
-@implementation QuantizedBlock
-
-@synthesize block, interval, extraBars,executeOnMainThread;
-
-@end
-
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+
+#include <queue>
+#include <functional>
+
 
 //These definitions taken directly from VVOpenSource (https://code.google.com/p/vvopensource/) Thank you!
 
@@ -37,8 +26,8 @@
 #define VVMIDIProgramChangeVal 0xC0		//	+1 data byte
 #define VVMIDIChannelPressureVal 0xD0	//	+1 data byte
 #define VVMIDIPitchWheelVal 0xE0		//	+2 data bytes
-//	these status messages go anywhere/everywhere
-//	0xF0 - 0xF7		system common messages
+                                        //	these status messages go anywhere/everywhere
+                                        //	0xF0 - 0xF7		system common messages
 #define VVMIDIBeginSysexDumpVal 0xF0	//	signals the start of a sysex dump; unknown amount of data to follow
 #define VVMIDIMTCQuarterFrameVal 0xF1	//	+1 data byte, rep. time code; 0-127
 #define VVMIDISongPosPointerVal 0xF2	//	+ 2 data bytes, rep. 14-bit val; this is MIDI beat on which to start song.
@@ -47,7 +36,7 @@
 #define VVMIDIUndefinedCommon2Val 0xF5
 #define VVMIDITuneRequestVal 0xF6		//	no data bytes!
 #define VVMIDIEndSysexDumpVal 0xF7		//	signals the end of a sysex dump
-//	0xF8 - 0xFF		system realtime messages
+                                        //	0xF8 - 0xFF		system realtime messages
 #define VVMIDIClockVal	 0xF8			//	no data bytes! 24 of these per. quarter note/96 per. measure.
 #define VVMIDITickVal 0xF9				//	no data bytes! when master clock playing back, sends 1 tick every 10ms.
 #define VVMIDIStartVal 0xFA				//	no data bytes!
@@ -57,19 +46,52 @@
 #define VVMIDIActiveSenseVal 0xFE		//	no data bytes! sent every 300 ms. to make sure device is active
 #define VVMIDIResetVal	 0xFF			//	no data bytes! never received/don't send!
 
+#define BEAT_TICKS 24
+#define BAR_TICKS 96
+#define SMOOTHING_FACTOR 0.5f
+
+
+
+void clearQueue( std::queue<PGMidiMessage*> &q )
+{
+    std::queue<PGMidiMessage*> empty;
+    std::swap( q, empty );
+}
+
+@interface QuantizedBlock : NSObject
+
+@property (atomic,copy) void(^block)();
+@property (nonatomic) double interval;
+@property (nonatomic) int extraBars;
+@property (nonatomic) BOOL executeOnMainThread;
+@property (nonatomic) BOOL repeat;
+
+@end
+
+@implementation QuantizedBlock
+
+@synthesize block, interval, extraBars,executeOnMainThread,repeat;
+
+@end
+
+
+
 @implementation PGMidiSession
 {
 	double currentClockTime;
 	double previousClockTime;
 	
-	int num96notes;
+	int currentNumTicks;
 	
 	NSMutableArray *quantizedBlockQueue;
     
     double intervalInNanoseconds;
     double tickDelta;
     
-    NSMutableArray* quantizedNoteQueue;
+    NSMutableDictionary *quantizedNoteStepQueue;
+    
+    pthread_mutex_t midi_messages_mutex;
+    std::queue<PGMidiMessage*> midi_messages_queue;
 }
 
 @synthesize midi, delegate, bpm, playing;
@@ -93,6 +115,10 @@ static PGMidiSession *shared = nil;
 	{
 		quantizedBlockQueue = [[NSMutableArray alloc] init];
 		
+        //queue = [[NSMutableArray alloc] initWithCapacity:50];
+        
+        tickDelta = 0;
+        
 		midi = [[PGMidi alloc] init];
 		midi.automaticSourceDelegate = self;
         [midi enableNetwork:YES];
@@ -100,14 +126,14 @@ static PGMidiSession *shared = nil;
 		bpm = -1; //signifies no MIDI clock in
         
         //prepare queue with 20 slots (to avoid unecessary memory allocation in the high priority thread later on)
-        quantizedNoteQueue = [[NSMutableArray alloc] initWithCapacity:20];
+        quantizedNoteStepQueue = [[NSMutableDictionary alloc] initWithCapacity:20];
 	}
     
 	return self;
 }
 
 //==============================================================================
-#pragma mark PGMidiSessionDelegate 
+#pragma mark PGMidiSessionDelegate
 
 - (void) midiSource:(PGMidiSource *)source midiReceived:(const MIDIPacketList *)packetList
 {
@@ -124,7 +150,7 @@ static PGMidiSession *shared = nil;
 			{
                 /* every MIDI clock packet sent is a 96th note. */
                 /* 0 is the downbeat of 1 */
-                if (num96notes == 0)
+                if (currentNumTicks == 0)
                 {
                     for (QuantizedBlock *qb in quantizedBlockQueue)
                     {
@@ -136,8 +162,8 @@ static PGMidiSession *shared = nil;
                 for (NSUInteger j = 0; j < quantizedBlockQueue.count; j++)
                 {
                     QuantizedBlock *qb = quantizedBlockQueue[j];
-                    int interval = (int)(qb.interval*96);
-                    if (num96notes % interval == 0 && qb.extraBars <= 0)
+                    int interval = (int)(qb.interval*BAR_TICKS);
+                    if (currentNumTicks % interval == 0 && qb.extraBars <= 0)
                     {
                         //run the block on the main thread to allow UI updates etc
                         if(qb.executeOnMainThread)
@@ -145,12 +171,15 @@ static PGMidiSession *shared = nil;
                         else
                             qb.block();
                         
-                        [quantizedBlockQueue removeObjectAtIndex:j];
-                        j--;
+                        if(qb.repeat == NO)
+                        {
+                            [quantizedBlockQueue removeObjectAtIndex:j];
+                            j--;
+                        }
                     }
                 }
 				
-				num96notes = (num96notes + 1) % 96;
+				currentNumTicks = (currentNumTicks + 1) % BAR_TICKS;
 			}
 			
 			/* BPM calculation, taken from http://stackoverflow.com/questions/13562714/calculate-accurate-bpm-from-midi-clock-in-objc-with-coremidi */
@@ -159,36 +188,69 @@ static PGMidiSession *shared = nil;
 			
             if(previousClockTime > 0 && currentClockTime > 0)
             {
-                tickDelta = currentClockTime-previousClockTime;
+                if (tickDelta==0)
+                {
+                    tickDelta = currentClockTime-previousClockTime;
+                }
+                else
+                    tickDelta = ((currentClockTime-previousClockTime)*SMOOTHING_FACTOR) + ( tickDelta * ( 1.0 - SMOOTHING_FACTOR) );
+                
                 intervalInNanoseconds = [self convertTimeInNanoseconds:(Float64)tickDelta];
-                bpm = (1000000 / intervalInNanoseconds / 24) * 60;
+                
+                double newBPM = (1000000 / intervalInNanoseconds / BEAT_TICKS) * 60;
+                bpm = (newBPM*SMOOTHING_FACTOR) + ( bpm * ( 1.0 - SMOOTHING_FACTOR) );
             }
+            
+            @autoreleasepool {
+                [self processQuantize];
+            }
+            
         }
-		else if (status == VVMIDINoteOnVal)
-		{
-			dispatch_async(dispatch_get_main_queue(), ^
-						   {
-							   [delegate midiSource:source sentNote:data[1] velocity:data[2]];
-						   });
-		}
-		else if (status == VVMIDIControlChangeVal)
-		{
-			dispatch_async(dispatch_get_main_queue(), ^
-						   {
-							   [delegate midiSource:source sentCC:data[1] value:data[2]];
-						   });
-		}
+        //TODO: call delegate with proper stuff ...
+		/*else if (status >= VVMIDINoteOnVal)
+         {
+         dispatch_async(dispatch_get_main_queue(), ^
+         {
+         [delegate midiSource:source sentNote:data[1] velocity:data[2]];
+         });
+         }
+         else if (status == VVMIDIControlChangeVal)
+         {
+         dispatch_async(dispatch_get_main_queue(), ^
+         {
+         [delegate midiSource:source sentCC:data[1] value:data[2]];
+         });
+         }*/
 		else if (status == VVMIDIStartVal)
 		{
 			playing = YES;
 			//reset to 0 -- the immediate next MIDI clock signal will be the downbeat of 1
-			num96notes = 0;
+			currentNumTicks = 0;
             intervalInNanoseconds = 0;
+            
+            //clear messages queue
+            pthread_mutex_lock(&midi_messages_mutex);
+            clearQueue(midi_messages_queue);
+            pthread_mutex_unlock(&midi_messages_mutex);
+            
+            [quantizedNoteStepQueue removeAllObjects];
+            
+            [delegate midiClockStart];
 		}
 		else if (status == VVMIDIStopVal)
 		{
 			playing = NO;
             intervalInNanoseconds = 0;
+            tickDelta = 0;
+            
+            //clear messages queue
+            pthread_mutex_lock(&midi_messages_mutex);
+            clearQueue(midi_messages_queue);
+            pthread_mutex_unlock(&midi_messages_mutex);
+            
+            [quantizedNoteStepQueue removeAllObjects];
+            
+            [delegate midiClockStop];
 		}
 		
         packet = MIDIPacketNext(packet);
@@ -196,18 +258,20 @@ static PGMidiSession *shared = nil;
 }
 
 //==============================================================================
-#pragma mark Quantized Perform 
+#pragma mark Quantized Perform
 
-- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)bars
+- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)bars repeat:(BOOL)repeat
 {
 	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
     [qb setExecuteOnMainThread:YES];
+    [qb setRepeat:repeat];
     [quantizedBlockQueue addObject:qb];
 }
 
-- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars
+- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars repeat:(BOOL)repeat
 {
 	QuantizedBlock *qb = [self createQuantizedBlock:block quantizedToInterval:bars];
+    [qb setRepeat:repeat];
     [quantizedBlockQueue addObject:qb];
 }
 
@@ -215,7 +279,7 @@ static PGMidiSession *shared = nil;
 #pragma mark MIDI Output API
 
 - (void)sendMidiMessage:(PGMidiMessage*)message
-{   
+{
     [message setReceivedTimeStamp:mach_absolute_time()];
     
     //If the trigger time stamp is defined then use it.
@@ -239,66 +303,75 @@ static PGMidiSession *shared = nil;
 
 - (void) sendMidiMessage:(PGMidiMessage *)message quantizedToFraction:(double)quantize
 {
-    //Calculate trigger timestamp
-    [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:quantize]];
-    
-    for(NSUInteger i=0;i<[quantizedNoteQueue count];i++)
+    //Check if note is already in the step queue otherwise we ignore
+    if([quantizedNoteStepQueue objectForKey:[message getUniqueKey]]==nil)
     {
-        PGMidiMessage* currentMessage = [quantizedNoteQueue objectAtIndex:i];
+        [message setQuantize:quantize];
         
-        //check if the current note was already triggered during the current tick interval
-        //We dont want to send multiple times the same note within the same interval.
-        if([currentMessage isEqualToMessage:message])
-            return;
-        
-        //Note On of the current Note Off found in the same interval
-        //To avoid not hearing the note because the note on and off are going to be triggered at the exact same time
-        //-> Apply note off strategy:
-        //  1. We take the interval between when the note on was triggered and now and apply the same interval
-        //  2. We defer the Note Off until the next quantize step
-        if(message.status == PGMIDINoteOffStatus &&
-           currentMessage.status == PGMIDINoteOnStatus &&
-           currentMessage.channel == message.channel &&
-           currentMessage.value1 == currentMessage.value1)
-        {
-            if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategySameLength)
-            {
-                message.triggerTimeStamp += (mach_absolute_time() - currentMessage.receivedTimeStamp);
-            }
-            else if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategyOneStep)
-            {
-                message.triggerTimeStamp = currentMessage.triggerTimeStamp + (tickDelta*quantize*96);//[self calculateMIDITimeStampWithQuantize:quantize withStepDelay:1];
-            }
-            else if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategyNone)
-            {
-                //Nothing
-            }
-
-            break;
-        }
+        pthread_mutex_lock(&midi_messages_mutex);
+        midi_messages_queue.push(message);
+        pthread_mutex_unlock(&midi_messages_mutex);
     }
-    
-    //Send Message to CoreMIDI
-    [self sendMidiMessage:message];
-    
-    
-    //if(message.status == PGMIDINoteOffStatus)
-    //    return;
-    
-    //Add the note that was just queued in CoreMIDI in the quantize queue
-    [quantizedNoteQueue addObject:message];
-    
-    //Delete the note from the queue as soon as it's triggered
-    //This is an approximate call because the note triggered by CoreMIDI at a given interval will be much more accurate
-    [self performBlock:^{
-        [quantizedNoteQueue removeObject:message];
-    } quantizedToInterval:quantize];
-    
-    //dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(message.triggerTimeStamp - mach_absolute_time()));
-    //dispatch_after(popTime, dispatch_get_main_queue(), ^(void)
-    //          {
-    //              [quantizedNoteQueue removeObject:message];
-    //          });
+}
+
+- (void) processQuantize
+{
+    while (!midi_messages_queue.empty())
+    {
+        PGMidiMessage *message = midi_messages_queue.front();
+        
+        //Calculate trigger timestamp
+        [message setTriggerTimeStamp:[self calculateMIDITimeStampWithQuantize:message.quantize]];
+        
+        //Apply some extra logic if the message is a note OFF
+        if(message.status == PGMIDINoteOffStatus)
+        {
+            PGMidiMessage *noteOnMessage = [quantizedNoteStepQueue objectForKey:[message getNoteOnUniqueKey]];
+            
+            if(noteOnMessage)
+            {
+                //Note On of the current Note Off found in the same interval
+                //To avoid not hearing the note because the note on and off are going to be triggered at the exact same time
+                //-> Apply note off strategy:
+                //  1. We take the interval between when the note on was triggered and now and apply the same interval
+                //  2. We defer the Note Off until the next quantize step
+                if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategySameLength)
+                {
+                    message.triggerTimeStamp += (mach_absolute_time() - noteOnMessage.receivedTimeStamp);
+                }
+                else if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategyOneStep)
+                {
+                    message.triggerTimeStamp = noteOnMessage.triggerTimeStamp + (tickDelta*message.quantize*BAR_TICKS);
+                }
+                else if(message.quantizedNoteOffStrategy == QuantizedNoteOffStrategyNone)
+                {
+                    //Nothing
+                }
+            }
+            else
+            {
+                [message setTriggerTimeStamp:0];
+            }
+        }
+        
+        //Send Message to CoreMIDI
+        [self sendMidiMessage:message];
+        
+        //add in the quantize step map the note which was sent to CoreMIDI for one quantize step
+        //(as we do not want to trigger multiple times the same note during the current step)
+        [quantizedNoteStepQueue setObject:message forKey:[message getUniqueKey]];
+        
+        //Delete the note from the quantize step map as soon as it's triggered
+        dispatch_after(message.triggerTimeStamp, dispatch_get_main_queue(), ^(void)
+        {
+            [quantizedNoteStepQueue removeObjectForKey:[message getUniqueKey]];
+        });
+        
+        //pop the message from the queue
+        pthread_mutex_lock(&midi_messages_mutex);
+        midi_messages_queue.pop();
+        pthread_mutex_unlock(&midi_messages_mutex);
+    }
 }
 
 //==============================================================================
@@ -312,7 +385,7 @@ static PGMidiSession *shared = nil;
 	qb.interval =  bars-qb.extraBars; //get the decimal part
 	if (qb.interval == 0)
 		qb.interval = 1; //if the interval is on a 1 downbeat it'll be 0
-	NSLog(@"after %d bars, will run at the %d (currently on %d)",qb.extraBars,(int)(qb.interval*96),num96notes);
+                         //NSLog(@"after %d bars, will run at the %d (currently on %d)",qb.extraBars,(int)(qb.interval*96),num96notes);
     
     return qb;
 }
@@ -326,8 +399,8 @@ static PGMidiSession *shared = nil;
 
 - (MIDITimeStamp) calculateMIDITimeStampWithQuantize:(double)quantize withStepDelay:(double)stepDelay
 {
-    double ticks = quantize*96;
-    double remainingTicks = ticks - fmod(num96notes,ticks) + (ticks*stepDelay);
+    double ticks = quantize*BAR_TICKS;
+    double remainingTicks = ticks - fmod(currentNumTicks,ticks) + (ticks*stepDelay);
     double triggerTimeStamp = currentClockTime + tickDelta * remainingTicks;
     
     return (MIDITimeStamp)triggerTimeStamp;

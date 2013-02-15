@@ -18,19 +18,19 @@
  
  Sending note on/off:
  
-     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage noteOn:0 withVelocity:127 withChannel:1]];
-     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage noteOff:0 withVelocity:127 withChannel:1]];
+ [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage noteOn:0 withVelocity:127 withChannel:1]];
+ [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage noteOff:0 withVelocity:127 withChannel:1]];
  
  Sending CC or PitchWheel:
  
-     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage controlChange:0 withValue:60 withChannel:1]];
-     [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage pitchWheel:60 withMSB:0 withChannel:1]];
+ [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage controlChange:0 withValue:60 withChannel:1]];
+ [[PGMidiSession sharedSession] sendMidiMessage:[PGMidiMessage pitchWheel:60 withMSB:0 withChannel:1]];
  
  Accessing BPM:
-	 [PGMidiSession sharedSession].bpm
+ [PGMidiSession sharedSession].bpm
  
  Receiving MIDI data:
-	 Set [PGMidiSession sharedSession].delegate to a PGMidiSourceDelegate and implement the two delegate methods!
+ Set [PGMidiSession sharedSession].delegate to a PGMidiSourceDelegate and implement the two delegate methods!
  
  Quantization:
  
@@ -40,13 +40,13 @@
  
  You can perform on the main thread (most likely for UI stuff)
  
-     [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:1];    // Prints "HI" on the next downbeat of a new bar
-     [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:0.25]; // Prints "HI" on the next quarter note
-     [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:1.25]; // Waits till the next bar, then prints "HI" on the next quarter note
+ [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:1];    // Prints "HI" on the next downbeat of a new bar
+ [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:0.25]; // Prints "HI" on the next quarter note
+ [[PGMidiSession sharedSession] performBlockOnMainThread:^{ NSLog(@"HI"); } quantizedToInterval:1.25]; // Waits till the next bar, then prints "HI" on the next quarter note
  
  Or you can perform straight in the high priority thread used by CoreMIDI
  
-     [[PGMidiSession sharedSession] performBlock:^{ ... } quantizedToInterval:1];  
+ [[PGMidiSession sharedSession] performBlock:^{ ... } quantizedToInterval:1];
  
  
  Troubleshooting:
@@ -71,27 +71,29 @@
 - (void)sendMidiMessage:(PGMidiMessage*)message afterDelay:(NSTimeInterval)delay;
 - (void)sendMidiMessage:(PGMidiMessage*)message quantizedToFraction:(double)quantize;
 
-/* 
+/*
  In case you need to update some UI elements at a givent quantization division, this will do the trick..
  */
-- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)numBarsOrFraction;
+- (void) performBlockOnMainThread:(void (^)(void))block quantizedToInterval:(double)bars repeat:(BOOL)repeat;
 
 /*
  In case you need to perform some logic at a given quantization division in the high priority thread.
- Be careful to not use Blocking IO. 
+ Be careful to not use Blocking IO.
  
  Quantization accuracy of this method is great for local processing but would not be the best to send midi events as it doesn't account for the latency.
  If you want to send a note at a given quantization division, use sendNoteOn:withChannel:withVelocity:quantizedToInterval instead as it will use CoreMIDI
- timestamp and let CoreMIDI deal with the latency which is very precise and theorically result to a 0ms latency as the midi message is sent in advance 
+ timestamp and let CoreMIDI deal with the latency which is very precise and theorically result to a 0ms latency as the midi message is sent in advance
  to be triggered at a given time in the future.
  */
-- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars;
+- (void) performBlock:(void (^)(void))block quantizedToInterval:(double)bars repeat:(BOOL)repeat;
 
 @end
 
 @protocol PGMidiSessionDelegate <NSObject>
 
-- (void) midiSource:(PGMidiSource *)source sentNote:(int)note velocity:(int)vel;
-- (void) midiSource:(PGMidiSource *)source sentCC:(int)cc value:(int)val;
+//- (void) midiSource:(PGMidiSource *)source messageReceived:(PGMidiMessage*)message;
+
+- (void) midiClockStart;
+- (void) midiClockStop;
 
 @end

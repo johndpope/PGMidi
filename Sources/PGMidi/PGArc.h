@@ -17,7 +17,7 @@
 #endif
 
 #if __has_feature(objc_arc) && __clang_major__ >= 3
-    #define PGMIDI_ARC 1
+    #define PGMIDI_ARC 0
 #else
     #define PGMIDI_ARC 0
 #endif

@@ -10,7 +10,7 @@
 
 @implementation PGMidiMessage
 
-@synthesize status,channel,value1,value2,triggerTimeStamp,receivedTimeStamp,quantizedNoteOffStrategy;
+@synthesize status,channel,value1,value2,triggerTimeStamp,receivedTimeStamp,quantizedNoteOffStrategy,quantize;
 
 +(PGMidiMessage*) noteOn:(int)note withVelocity:(int)velocity withChannel:(int)_channel
 {
@@ -56,6 +56,20 @@
     }
     
     return self;
+}
+
+-(NSString*) getUniqueKey
+{
+    NSString* key = [NSString stringWithFormat:@"%d%d%d",status,channel,value1];
+    
+    return key;
+}
+
+-(NSString*) getNoteOnUniqueKey
+{
+    NSString* key = [NSString stringWithFormat:@"%d%d%d",PGMIDINoteOnStatus,channel,value1];
+    
+    return key;
 }
 
 -(BOOL) isEqualToMessage:(PGMidiMessage*)message

@@ -9,7 +9,7 @@
 #import <CoreMIDI/CoreMIDI.h>
 #import <Foundation/Foundation.h>
 
-#define PGMIDINoteOffStatus 0x80			
+#define PGMIDINoteOffStatus 0x80
 #define PGMIDINoteOnStatus 0x90
 #define PGMIDIControlChangeStatus 0xB0
 #define PGMIDIPitchWheelStatus 0xE0
@@ -39,6 +39,8 @@ typedef enum  {
 //Time at which the message should be triggered.
 @property (nonatomic) MIDITimeStamp triggerTimeStamp;
 
+@property (nonatomic) double quantize;
+
 @property (nonatomic) QuantizedNoteOffStrategy quantizedNoteOffStrategy;
 
 +(PGMidiMessage*) noteOn:(int)note withVelocity:(int)velocity withChannel:(int)channel;
@@ -56,5 +58,10 @@ typedef enum  {
 
 //Used to get the Bytes to send to CoreMIDI
 -(MIDIMessageStruct) toBytes;
+
+-(NSString*) getUniqueKey;
+
+//In case it is a note OFF, this is an easy way to get its corresponding note ON key (used for quantize routine)
+-(NSString*) getNoteOnUniqueKey;
 
 @end
